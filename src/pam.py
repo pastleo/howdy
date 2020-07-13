@@ -1,10 +1,11 @@
-# PAM interface in python, launches compare.py
+# PAM interface in python, launches compare.sh
 
 # Import required modules
 import subprocess
 import os
 import glob
 import syslog
+import time
 
 # pam-python is running python 2, so we use the old module here
 import ConfigParser
@@ -12,7 +13,6 @@ import ConfigParser
 # Read config from disk
 config = ConfigParser.ConfigParser()
 config.read(os.path.dirname(os.path.abspath(__file__)) + "/config.ini")
-
 
 def doAuth(pamh):
 	"""Starts authentication in a seperate process"""
@@ -38,36 +38,52 @@ def doAuth(pamh):
 	if config.getboolean("core", "detection_notice"):
 		pamh.conversation(pamh.Message(pamh.PAM_TEXT_INFO, "Attempting face detection"))
 
-	syslog.syslog(syslog.LOG_INFO, "Attempting facial authentication for user " + pamh.get_user())
+	syslog.syslog("Attempting facial authentication for user " + pamh.get_user())
 
-	# Run compare as python3 subprocess to circumvent python version and import issues
-	status = subprocess.call(["/usr/bin/python3", os.path.dirname(os.path.abspath(__file__)) + "/compare.py", pamh.get_user()])
+	# Run compare using sudo and python3 subprocess to circumvent python version, import and permission issues
+
+	# original python3 command:
+	# subprocess.call(["/usr/bin/python3", os.path.dirname(os.path.abspath(__file__)) + "/compare.py", pamh.get_user()])
+
+	status_file_rand = "{}".format(time.time())
+	status_file_path = "/tmp/howdy-compare-{}".format(status_file_rand)
+
+	sudo_status = subprocess.call(["sudo", "-E", os.path.dirname(os.path.abspath(__file__)) + "/compare.sh", pamh.get_user(), status_file_rand])
+
+	if sudo_status != 0:
+		pamh.conversation(pamh.Message(pamh.PAM_TEXT_INFO, "sudo failed"))
+		syslog.syslog("[HOWDY] Failure, sudo error" + str(sudo_status))
+		return pamh.PAM_SYSTEM_ERR
+
+	status_file = open(status_file_path)
+	status = int(status_file.read().strip())
+	status_file.close()
 
 	# Status 10 means we couldn't find any face models
 	if status == 10:
 		if not config.getboolean("core", "suppress_unknown"):
 			pamh.conversation(pamh.Message(pamh.PAM_ERROR_MSG, "No face model known"))
 
-		syslog.syslog(syslog.LOG_NOTICE, "Failure, no face model known")
+		syslog.syslog("Failure, no face model known")
 		syslog.closelog()
 		return pamh.PAM_USER_UNKNOWN
 
 	# Status 11 means we exceded the maximum retry count
 	elif status == 11:
 		pamh.conversation(pamh.Message(pamh.PAM_ERROR_MSG, "Face detection timeout reached"))
-		syslog.syslog(syslog.LOG_INFO, "Failure, timeout reached")
+		syslog.syslog("Failure, timeout reached")
 		syslog.closelog()
 		return pamh.PAM_AUTH_ERR
 
 	# Status 12 means we aborted
 	elif status == 12:
-		syslog.syslog(syslog.LOG_INFO, "Failure, general abort")
+		syslog.syslog("Failure, general abort")
 		syslog.closelog()
 		return pamh.PAM_AUTH_ERR
 
 	# Status 13 means the image was too dark
 	elif status == 13:
-		syslog.syslog(syslog.LOG_INFO, "Failure, image too dark")
+		syslog.syslog("Failure, image too dark")
 		syslog.closelog()
 		pamh.conversation(pamh.Message(pamh.PAM_ERROR_MSG, "Face detection image too dark"))
 		return pamh.PAM_AUTH_ERR
@@ -77,13 +93,13 @@ def doAuth(pamh):
 		if not config.getboolean("core", "no_confirmation"):
 			pamh.conversation(pamh.Message(pamh.PAM_TEXT_INFO, "Identified face as " + pamh.get_user()))
 
-		syslog.syslog(syslog.LOG_INFO, "Login approved")
+		syslog.syslog("Login approved")
 		syslog.closelog()
 		return pamh.PAM_SUCCESS
 
 	# Otherwise, we can't discribe what happend but it wasn't successful
 	pamh.conversation(pamh.Message(pamh.PAM_ERROR_MSG, "Unknown error: " + str(status)))
-	syslog.syslog(syslog.LOG_INFO, "Failure, unknown error" + str(status))
+	syslog.syslog("Failure, unknown error" + str(status))
 	syslog.closelog()
 	return pamh.PAM_SYSTEM_ERR
 

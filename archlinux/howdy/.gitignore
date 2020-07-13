@@ -1,7 +1,5 @@
 pkg
 src
-*.tar.gz
-*.zip
-*.tar.xz
-*.patch
+*.pkg.tar.zst
 *.dat.bz2
+howdy
